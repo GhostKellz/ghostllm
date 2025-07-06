@@ -1,10 +1,75 @@
 const std = @import("std");
 const ghostllm = @import("ghostllm");
 
+const Mode = enum {
+    serve,
+    bench,
+    inspect,
+    ghost,
+};
+
 pub fn main() !void {
-    // Prints to stderr, ignoring potential errors.
-    std.debug.print("All your {s} are belong to us.\n", .{"codebase"});
-    try ghostllm.bufferedPrint();
+    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    defer _ = gpa.deinit();
+    const allocator = gpa.allocator();
+
+    const args = try std.process.argsAlloc(allocator);
+    defer std.process.argsFree(allocator, args);
+
+    if (args.len < 2) {
+        try printUsage();
+        return;
+    }
+
+    const mode_str = args[1];
+    const mode = std.meta.stringToEnum(Mode, mode_str) orelse {
+        std.debug.print("Unknown mode: {s}\n", .{mode_str});
+        try printUsage();
+        return;
+    };
+
+    switch (mode) {
+        .serve => try runServeMode(),
+        .bench => try runBenchMode(),
+        .inspect => try runInspectMode(),
+        .ghost => try runGhostMode(),
+    }
+}
+
+fn printUsage() !void {
+    const stdout = std.io.getStdOut().writer();
+    try stdout.print(
+        \\GhostLLM v0.1.0 - GPU-Accelerated AI Proxy
+        \\
+        \\Usage: ghostllm <mode> [options]
+        \\
+        \\Modes:
+        \\  serve    Start QUIC-native LLM serving API
+        \\  bench    Benchmark GPU inference & latency
+        \\  inspect  Show GPU stats, model memory, and throughput
+        \\  ghost    Smart contract-aware inferencing layer
+        \\
+    , .{});
+}
+
+fn runServeMode() !void {
+    std.debug.print("Starting GhostLLM serve mode...\n", .{});
+    try ghostllm.startServer();
+}
+
+fn runBenchMode() !void {
+    std.debug.print("Running GhostLLM benchmarks...\n", .{});
+    try ghostllm.runBenchmarks();
+}
+
+fn runInspectMode() !void {
+    std.debug.print("Inspecting GPU and system stats...\n", .{});
+    try ghostllm.inspectSystem();
+}
+
+fn runGhostMode() !void {
+    std.debug.print("Starting GhostChain-aware inference mode...\n", .{});
+    try ghostllm.startGhostMode();
 }
 
 test "simple test" {
