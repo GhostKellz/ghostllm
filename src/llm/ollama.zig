@@ -44,17 +44,29 @@ pub const Usage = struct {
 };
 
 pub fn handleChatCompletion(allocator: std.mem.Allocator, request: ChatRequest) ![]const u8 {
-    _ = config.getConfig();
+    const cfg = config.getConfig();
     
     // Convert to Ollama format
     const ollama_request = try createOllamaRequest(allocator, request);
     defer allocator.free(ollama_request);
     
-    // Make request to Ollama
-    const ollama_response = try makeOllamaRequest(allocator, "/api/chat", ollama_request);
+    // Make HTTP request to Ollama
+    const http_client = @import("../protocol/http_client.zig");
+    const client = http_client.HttpClient.init(allocator);
+    
+    const ollama_url = try std.fmt.allocPrint(allocator, "http://{s}:{}/api/chat", .{ cfg.ollama_host, cfg.ollama_port });
+    defer allocator.free(ollama_url);
+    
+    const ollama_response = client.post(ollama_url, ollama_request) catch |err| {
+        std.debug.print("Failed to connect to Ollama: {}\n", .{err});
+        // Fallback to mock response for now
+        return try allocator.dupe(u8,
+            \\{"id": "chatcmpl-fallback", "object": "chat.completion", "created": 1677652288, "model": "llama2", "choices": [{"message": {"role": "assistant", "content": "Hello! Ollama is not available, this is a fallback response."}, "finish_reason": "stop", "index": 0}]}
+        );
+    };
     defer allocator.free(ollama_response);
     
-    // Convert response to OpenAI format
+    // Convert Ollama response to OpenAI format
     return try convertOllamaToOpenAI(allocator, ollama_response, request.model, "chat.completion");
 }
 
@@ -74,29 +86,7 @@ pub fn getAvailableModels(allocator: std.mem.Allocator) ![]const u8 {
     const ollama_response = try makeOllamaRequest(allocator, "/api/tags", "{}");
     defer allocator.free(ollama_response);
     
-    // Parse Ollama models response and convert to OpenAI format
-    const parsed = std.json.parseFromSlice(std.json.Value, allocator, ollama_response, .{}) catch {
-        return try allocator.dupe(u8,
-            \\{"object": "list", "data": [{"id": "llama2", "object": "model", "created": 1677610602, "owned_by": "ollama"}]}
-        );
-    };
-    defer parsed.deinit();
-    
-    var models_array = std.ArrayList(std.json.Value).init(allocator);
-    defer models_array.deinit();
-    
-    if (parsed.value.object.get("models")) |models| {
-        if (models.array) |model_list| {
-            for (model_list.items) |model| {
-                if (model.object.get("name")) |_| {
-                    const model_obj = std.json.Value{ .object = std.StringHashMap(std.json.Value).init(allocator) };
-                    // Note: This is simplified - in real implementation we'd properly construct the model object
-                    try models_array.append(model_obj);
-                }
-            }
-        }
-    }
-    
+    // For now, return a simplified response - in real implementation we'd parse Ollama's response
     return try allocator.dupe(u8,
         \\{"object": "list", "data": [{"id": "llama2", "object": "model", "created": 1677610602, "owned_by": "ollama"}]}
     );

@@ -1,5 +1,10 @@
 const std = @import("std");
 
+pub const Header = struct {
+    name: []const u8,
+    value: []const u8,
+};
+
 pub const HttpClient = struct {
     allocator: std.mem.Allocator,
     
@@ -10,14 +15,16 @@ pub const HttpClient = struct {
     }
     
     pub fn get(self: HttpClient, url: []const u8) ![]const u8 {
-        return self.request("GET", url, null);
+        return self.requestWithHeaders("GET", url, null, &[_]Header{});
     }
     
     pub fn post(self: HttpClient, url: []const u8, body: ?[]const u8) ![]const u8 {
-        return self.request("POST", url, body);
+        return self.requestWithHeaders("POST", url, body, &[_]Header{
+            .{ .name = "Content-Type", .value = "application/json" },
+        });
     }
     
-    pub fn request(self: HttpClient, method: []const u8, url: []const u8, body: ?[]const u8) ![]const u8 {
+    pub fn requestWithHeaders(self: HttpClient, method: []const u8, url: []const u8, body: ?[]const u8, headers: []const Header) ![]const u8 {
         // Parse URL to extract host, port, and path
         const parsed = try parseUrl(self.allocator, url);
         defer self.allocator.free(parsed.host);
@@ -35,28 +42,43 @@ pub const HttpClient = struct {
         };
         defer stream.close();
         
-        // Build HTTP request
+        // Build HTTP request with headers
         const content_length = if (body) |b| b.len else 0;
-        const request_data = try std.fmt.allocPrint(self.allocator,
-            "{s} {s} HTTP/1.1\r\n" ++
-            "Host: {s}\r\n" ++
-            "User-Agent: GhostLLM/0.1.0\r\n" ++
-            "Content-Length: {}\r\n" ++
-            "Connection: close\r\n" ++
-            "\r\n" ++
-            "{s}",
-            .{ method, parsed.path, parsed.host, content_length, body orelse "" }
-        );
-        defer self.allocator.free(request_data);
+        var request_data = std.ArrayList(u8).init(self.allocator);
+        defer request_data.deinit();
+        
+        try request_data.writer().print("{s} {s} HTTP/1.1\r\n", .{ method, parsed.path });
+        try request_data.writer().print("Host: {s}\r\n", .{parsed.host});
+        try request_data.writer().print("User-Agent: GhostLLM/0.2.0\r\n", .{});
+        try request_data.writer().print("Content-Length: {}\r\n", .{content_length});
+        try request_data.writer().print("Connection: close\r\n", .{});
+        
+        // Add custom headers
+        for (headers) |header| {
+            try request_data.writer().print("{s}: {s}\r\n", .{ header.name, header.value });
+        }
+        
+        try request_data.writer().print("\r\n", .{});
+        if (body) |b| {
+            try request_data.appendSlice(b);
+        }
         
         // Send request
-        _ = try stream.writeAll(request_data);
+        _ = try stream.writeAll(request_data.items);
         
         // Read response
-        var response_buffer: [8192]u8 = undefined;
+        var response_buffer: [16384]u8 = undefined;
         const bytes_read = try stream.readAll(&response_buffer);
+        const response_data = response_buffer[0..bytes_read];
         
-        return try self.allocator.dupe(u8, response_buffer[0..bytes_read]);
+        // Parse HTTP response to extract body
+        const body_start = std.mem.indexOf(u8, response_data, "\r\n\r\n");
+        if (body_start) |start| {
+            const response_body = response_data[start + 4..];
+            return try self.allocator.dupe(u8, response_body);
+        }
+        
+        return try self.allocator.dupe(u8, response_data);
     }
 };
 

@@ -1,14 +1,19 @@
 const std = @import("std");
+const logger = @import("../logging/logger.zig");
 
 pub const Config = struct {
     port: u16 = 8080,
     ollama_host: []const u8 = "127.0.0.1",
     ollama_port: u16 = 11434,
     log_level: LogLevel = .info,
+    log_json: bool = false,
     max_connections: u32 = 100,
     request_timeout: u32 = 30,
     gpu_enabled: bool = false,
     metrics_enabled: bool = true,
+    cors_enabled: bool = true,
+    auth_enabled: bool = false,
+    api_key: ?[]const u8 = null,
 };
 
 pub const LogLevel = enum {
@@ -16,6 +21,15 @@ pub const LogLevel = enum {
     info,
     warn,
     err,
+    
+    pub fn toLoggerLevel(self: LogLevel) logger.LogLevel {
+        return switch (self) {
+            .debug => .debug,
+            .info => .info,
+            .warn => .warn,
+            .err => .err,
+        };
+    }
 };
 
 var global_config: Config = .{};
@@ -58,6 +72,20 @@ pub fn loadFromEnv() !void {
         defer allocator.free(level_str);
         global_config.log_level = parseLogLevel(level_str);
     } else |_| {}
+    
+    if (std.process.getEnvVarOwned(allocator, "GHOSTLLM_LOG_JSON")) |json_str| {
+        defer allocator.free(json_str);
+        global_config.log_json = std.mem.eql(u8, json_str, "true");
+    } else |_| {}
+    
+    if (std.process.getEnvVarOwned(allocator, "GHOSTLLM_API_KEY")) |api_key| {
+        defer allocator.free(api_key);
+        // TODO: Store API key securely
+        global_config.auth_enabled = api_key.len > 0;
+    } else |_| {}
+    
+    // Initialize logger with config
+    logger.init(global_config.log_level.toLoggerLevel(), global_config.log_json);
 }
 
 pub fn loadFromFile(file_path: []const u8) !void {
