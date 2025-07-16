@@ -181,6 +181,38 @@ pub fn parseHttpRequest(allocator: std.mem.Allocator, raw_data: []const u8) !Htt
     return request;
 }
 
+pub fn createJsonResponse(allocator: std.mem.Allocator, status_code: u16, json_body: []const u8) ![]const u8 {
+    const status_text = switch (status_code) {
+        200 => "OK",
+        400 => "Bad Request",
+        404 => "Not Found",
+        500 => "Internal Server Error",
+        else => "Unknown",
+    };
+    
+    var response = std.ArrayList(u8).init(allocator);
+    defer response.deinit();
+    
+    // Status line
+    try response.writer().print("HTTP/1.1 {} {s}\r\n", .{ status_code, status_text });
+    
+    // Headers
+    try response.writer().print("Content-Type: application/json\r\n", .{});
+    try response.writer().print("Content-Length: {}\r\n", .{json_body.len});
+    try response.writer().print("Access-Control-Allow-Origin: *\r\n", .{});
+    try response.writer().print("Access-Control-Allow-Methods: GET, POST, OPTIONS\r\n", .{});
+    try response.writer().print("Access-Control-Allow-Headers: Content-Type, Authorization\r\n", .{});
+    try response.writer().print("Connection: close\r\n", .{});
+    
+    // End headers
+    try response.writer().print("\r\n", .{});
+    
+    // Body
+    try response.appendSlice(json_body);
+    
+    return try allocator.dupe(u8, response.items);
+}
+
 fn getStatusText(status_code: u16) []const u8 {
     return switch (status_code) {
         200 => "OK",

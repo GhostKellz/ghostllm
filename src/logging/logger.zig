@@ -65,43 +65,35 @@ pub const Logger = struct {
     
     fn logJson(self: *const Logger, level: LogLevel, timestamp: i64, comptime fmt: []const u8, args: anytype) void {
         _ = self;
-        const stdout = std.io.getStdOut().writer();
         
-        // Format the message
-        var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
-        defer arena.deinit();
-        const allocator = arena.allocator();
-        
-        const message = std.fmt.allocPrint(allocator, fmt, args) catch "Failed to format message";
-        
-        stdout.print("{{\"timestamp\":{},\"level\":\"{s}\",\"message\":\"{s}\"}}\n", .{
+        // Use debug.print to avoid IO API issues
+        std.debug.print("{{\"timestamp\":{},\"level\":\"{s}\",\"message\":\"", .{
             timestamp,
             level.toString(),
-            message,
-        }) catch {};
+        });
+        std.debug.print(fmt, args);
+        std.debug.print("\"}}\n", .{});
     }
     
     fn logPlain(self: *const Logger, level: LogLevel, timestamp: i64, comptime fmt: []const u8, args: anytype) void {
         _ = self;
-        const stdout = std.io.getStdOut().writer();
         
         // Convert timestamp to readable format (simplified)
         const hours = @mod(@divTrunc(timestamp, 3600), 24);
         const minutes = @mod(@divTrunc(timestamp, 60), 60);
         const seconds = @mod(timestamp, 60);
         
-        stdout.print("[{:02}:{:02}:{:02}] [{s}] ", .{ hours, minutes, seconds, level.toString() }) catch {};
-        stdout.print(fmt, args) catch {};
-        stdout.print("\n", .{}) catch {};
+        std.debug.print("[{:02}:{:02}:{:02}] [{s}] ", .{ hours, minutes, seconds, level.toString() });
+        std.debug.print(fmt, args);
+        std.debug.print("\n", .{});
     }
     
     pub fn logRequest(self: *const Logger, method: []const u8, path: []const u8, status: u16, duration_ms: f64) void {
         if (self.json_format) {
             const timestamp = std.time.timestamp();
-            const stdout = std.io.getStdOut().writer();
-            stdout.print("{{\"timestamp\":{},\"level\":\"INFO\",\"type\":\"request\",\"method\":\"{s}\",\"path\":\"{s}\",\"status\":{},\"duration_ms\":{d:.2}}}\n", .{
+            std.debug.print("{{\"timestamp\":{},\"level\":\"INFO\",\"type\":\"request\",\"method\":\"{s}\",\"path\":\"{s}\",\"status\":{},\"duration_ms\":{d:.2}}}\n", .{
                 timestamp, method, path, status, duration_ms
-            }) catch {};
+            });
         } else {
             self.info("{s} {s} -> {} ({d:.2}ms)", .{ method, path, status, duration_ms });
         }

@@ -44,26 +44,12 @@ pub const Usage = struct {
 };
 
 pub fn handleChatCompletion(allocator: std.mem.Allocator, request: ChatRequest) ![]const u8 {
-    const cfg = config.getConfig();
-    
     // Convert to Ollama format
     const ollama_request = try createOllamaRequest(allocator, request);
     defer allocator.free(ollama_request);
     
     // Make HTTP request to Ollama
-    const http_client = @import("../protocol/http_client.zig");
-    const client = http_client.HttpClient.init(allocator);
-    
-    const ollama_url = try std.fmt.allocPrint(allocator, "http://{s}:{}/api/chat", .{ cfg.ollama_host, cfg.ollama_port });
-    defer allocator.free(ollama_url);
-    
-    const ollama_response = client.post(ollama_url, ollama_request) catch |err| {
-        std.debug.print("Failed to connect to Ollama: {}\n", .{err});
-        // Fallback to mock response for now
-        return try allocator.dupe(u8,
-            \\{"id": "chatcmpl-fallback", "object": "chat.completion", "created": 1677652288, "model": "llama2", "choices": [{"message": {"role": "assistant", "content": "Hello! Ollama is not available, this is a fallback response."}, "finish_reason": "stop", "index": 0}]}
-        );
-    };
+    const ollama_response = try makeOllamaRequest(allocator, "/api/chat", ollama_request);
     defer allocator.free(ollama_response);
     
     // Convert Ollama response to OpenAI format
@@ -122,31 +108,46 @@ fn createOllamaCompletionRequest(allocator: std.mem.Allocator, request: Completi
     , .{ request.model, request.prompt, temperature });
 }
 
-fn makeOllamaRequest(allocator: std.mem.Allocator, endpoint: []const u8, _: []const u8) ![]const u8 {
-    _ = config.getConfig();
+fn makeOllamaRequest(allocator: std.mem.Allocator, endpoint: []const u8, body: []const u8) ![]const u8 {
+    const cfg = config.getConfig();
     
-    // For now, return a mock response since we don't have HTTP client implemented
-    // In a real implementation, this would make an HTTP request to Ollama
+    // Use the HTTP client to make actual requests to Ollama
+    const http_client = @import("../protocol/http_client.zig");
+    const client = http_client.HttpClient.init(allocator);
     
-    if (std.mem.eql(u8, endpoint, "/api/tags")) {
-        return try allocator.dupe(u8,
-            \\{"models": [{"name": "llama2", "modified_at": "2023-08-04T19:22:45.085406Z", "size": 3826793677}]}
-        );
-    }
+    const ollama_url = try std.fmt.allocPrint(allocator, "http://{s}:{}{s}", .{ cfg.ollama_host, cfg.ollama_port, endpoint });
+    defer allocator.free(ollama_url);
     
-    if (std.mem.eql(u8, endpoint, "/api/chat")) {
-        return try allocator.dupe(u8,
-            \\{"model": "llama2", "created_at": "2023-08-04T19:22:45.499127Z", "message": {"role": "assistant", "content": "Hello! How can I help you today?"}, "done": true}
-        );
-    }
+    std.debug.print("Making Ollama request to: {s}\n", .{ollama_url});
+    std.debug.print("Request body: {s}\n", .{body});
     
-    if (std.mem.eql(u8, endpoint, "/api/generate")) {
-        return try allocator.dupe(u8,
-            \\{"model": "llama2", "created_at": "2023-08-04T19:22:45.499127Z", "response": "This is a generated response.", "done": true}
-        );
-    }
+    const response = client.post(ollama_url, body) catch |err| {
+        std.debug.print("Failed to connect to Ollama at {s}: {}\n", .{ollama_url, err});
+        
+        // Return appropriate fallback based on endpoint
+        if (std.mem.eql(u8, endpoint, "/api/tags")) {
+            return try allocator.dupe(u8,
+                \\{"models": [{"name": "llama2", "modified_at": "2023-08-04T19:22:45.085406Z", "size": 3826793677}]}
+            );
+        }
+        
+        if (std.mem.indexOf(u8, endpoint, "/api/chat") != null) {
+            return try allocator.dupe(u8,
+                \\{"model": "llama2", "created_at": "2023-08-04T19:22:45.499127Z", "message": {"role": "assistant", "content": "Hello! Ollama is not available, this is a fallback response."}, "done": true}
+            );
+        }
+        
+        if (std.mem.indexOf(u8, endpoint, "/api/generate") != null) {
+            return try allocator.dupe(u8,
+                \\{"model": "llama2", "created_at": "2023-08-04T19:22:45.499127Z", "response": "This is a fallback response from GhostLLM.", "done": true}
+            );
+        }
+        
+        return try allocator.dupe(u8, "{}");
+    };
     
-    return try allocator.dupe(u8, "{}");
+    std.debug.print("Ollama response: {s}\n", .{response});
+    return response;
 }
 
 fn convertOllamaToOpenAI(allocator: std.mem.Allocator, ollama_response: []const u8, model: []const u8, object_type: []const u8) ![]const u8 {

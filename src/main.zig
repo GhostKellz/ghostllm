@@ -37,19 +37,17 @@ pub fn main() !void {
 }
 
 fn printUsage() !void {
-    const stdout = std.io.getStdOut().writer();
-    try stdout.print(
-        \\GhostLLM v0.1.0 - GPU-Accelerated AI Proxy
-        \\
-        \\Usage: ghostllm <mode> [options]
-        \\
-        \\Modes:
-        \\  serve    Start QUIC-native LLM serving API
-        \\  bench    Benchmark GPU inference & latency
-        \\  inspect  Show GPU stats, model memory, and throughput
-        \\  ghost    Smart contract-aware inferencing layer
-        \\
-    , .{});
+    std.debug.print(
+        "GhostLLM v0.2.0 - GPU-Accelerated AI Proxy\n" ++
+        "\n" ++
+        "Usage: ghostllm <mode> [options]\n" ++
+        "\n" ++
+        "Modes:\n" ++
+        "  serve    Start QUIC-native LLM serving API\n" ++
+        "  bench    Benchmark GPU inference & latency\n" ++
+        "  inspect  Show GPU stats, model memory, and throughput\n" ++
+        "  ghost    Smart contract-aware inferencing layer\n" ++
+        "\n", .{});
 }
 
 fn runServeMode() !void {
