@@ -3,6 +3,8 @@ const config = @import("../config/config.zig");
 const logger = @import("../logging/logger.zig");
 const http_parser = @import("../protocol/http_parser.zig");
 const ollama = @import("../llm/ollama.zig");
+const providers = @import("../llm/providers.zig");
+const zeke = @import("../llm/zeke.zig");
 
 pub fn startServer() !void {
     const cfg = config.getConfig();
@@ -77,6 +79,8 @@ fn routeRequest(writer: anytype, allocator: std.mem.Allocator, request: *http_pa
         try handleChatCompletions(writer, allocator, request);
     } else if (std.mem.eql(u8, request.path, "/v1/completions")) {
         try handleCompletions(writer, allocator, request);
+    } else if (std.mem.startsWith(u8, request.path, "/v1/zeke/")) {
+        try handleZekeEndpoints(writer, allocator, request);
     } else {
         try sendErrorResponse(writer, allocator, 404, "Not Found");
     }
@@ -102,9 +106,9 @@ fn handleHealth(writer: anytype, allocator: std.mem.Allocator) !void {
 fn handleModels(writer: anytype, allocator: std.mem.Allocator) !void {
     logger.debug("Models list requested", .{});
     
-    // Get models from Ollama
-    const models_response = ollama.getAvailableModels(allocator) catch |err| {
-        logger.err("Failed to get models from Ollama: {}", .{err});
+    // Get models from all providers
+    const models_response = providers.getAllAvailableModels(allocator) catch |err| {
+        logger.err("Failed to get models: {}", .{err});
         const fallback = "{\"object\": \"list\", \"data\": [{\"id\": \"llama2\", \"object\": \"model\", \"created\": 1677610602, \"owned_by\": \"ollama\"}]}";
         const response = try http_parser.createJsonResponse(allocator, 200, fallback);
         defer allocator.free(response);
@@ -143,20 +147,20 @@ fn handleChatCompletions(writer: anytype, allocator: std.mem.Allocator, request:
     };
     
     // Convert JSON messages to ChatMessage structs
-    var messages = std.ArrayList(ollama.ChatMessage).init(allocator);
+    var messages = std.ArrayList(providers.ChatMessage).init(allocator);
     defer messages.deinit();
     
     for (messages_json.array.items) |msg| {
         const role = msg.object.get("role").?.string;
         const content = msg.object.get("content").?.string;
-        try messages.append(ollama.ChatMessage{
+        try messages.append(providers.ChatMessage{
             .role = role,
             .content = content,
         });
     }
     
-    // Create chat request
-    const chat_request = ollama.ChatRequest{
+    // Create chat request for the provider router
+    const chat_request = providers.ChatRequest{
         .model = model,
         .messages = messages.items,
         .temperature = if (root.object.get("temperature")) |t| @as(f32, @floatCast(t.float)) else null,
@@ -164,8 +168,8 @@ fn handleChatCompletions(writer: anytype, allocator: std.mem.Allocator, request:
         .stream = if (root.object.get("stream")) |s| s.bool else false,
     };
     
-    // Handle the chat completion
-    const completion_response = ollama.handleChatCompletion(allocator, chat_request) catch |err| {
+    // Route to appropriate provider
+    const completion_response = providers.routeRequest(allocator, chat_request) catch |err| {
         logger.err("Failed to handle chat completion: {}", .{err});
         try sendErrorResponse(writer, allocator, 500, "Internal server error");
         return;
@@ -226,4 +230,252 @@ fn sendErrorResponse(writer: anytype, allocator: std.mem.Allocator, status_code:
     const response = try http_parser.createJsonResponse(allocator, status_code, error_json);
     defer allocator.free(response);
     _ = try writer.writeAll(response);
+}
+
+/// Handle Zeke-specific AI development endpoints
+fn handleZekeEndpoints(writer: anytype, allocator: std.mem.Allocator, request: *http_parser.HttpRequest) !void {
+    const path = request.path;
+    
+    if (std.mem.eql(u8, path, "/v1/zeke/code/complete")) {
+        if (request.method != .POST) {
+            try sendErrorResponse(writer, allocator, 405, "Method Not Allowed");
+            return;
+        }
+        
+        if (request.body.len == 0) {
+            try sendErrorResponse(writer, allocator, 400, "Request body required");
+            return;
+        }
+        
+        // Parse JSON request body
+        const parsed = std.json.parseFromSlice(std.json.Value, allocator, request.body, .{}) catch |err| {
+            logger.err("Failed to parse JSON request: {}", .{err});
+            try sendErrorResponse(writer, allocator, 400, "Invalid JSON");
+            return;
+        };
+        defer parsed.deinit();
+        
+        const root = parsed.value;
+        const zeke_request = zeke.ZekeRequest{
+            .code = if (root.object.get("code")) |c| c.string else null,
+            .context = if (root.object.get("context")) |c| c.string else null,
+            .language = if (root.object.get("language")) |l| l.string else null,
+            .task = if (root.object.get("task")) |t| t.string else "complete",
+            .model = if (root.object.get("model")) |m| m.string else null,
+        };
+        
+        const response_data = try zeke.handleCodeCompletion(allocator, zeke_request);
+        defer allocator.free(response_data);
+        
+        const response = try http_parser.createJsonResponse(allocator, 200, response_data);
+        defer allocator.free(response);
+        _ = try writer.writeAll(response);
+        
+    } else if (std.mem.eql(u8, path, "/v1/zeke/code/analyze")) {
+        if (request.method != .POST) {
+            try sendErrorResponse(writer, allocator, 405, "Method Not Allowed");
+            return;
+        }
+        
+        if (request.body.len == 0) {
+            try sendErrorResponse(writer, allocator, 400, "Request body required");
+            return;
+        }
+        
+        const parsed = std.json.parseFromSlice(std.json.Value, allocator, request.body, .{}) catch |err| {
+            logger.err("Failed to parse JSON request: {}", .{err});
+            try sendErrorResponse(writer, allocator, 400, "Invalid JSON");
+            return;
+        };
+        defer parsed.deinit();
+        
+        const root = parsed.value;
+        const zeke_request = zeke.ZekeRequest{
+            .code = if (root.object.get("code")) |c| c.string else null,
+            .context = if (root.object.get("context")) |c| c.string else null,
+            .language = if (root.object.get("language")) |l| l.string else null,
+            .task = if (root.object.get("task")) |t| t.string else "analyze",
+            .model = if (root.object.get("model")) |m| m.string else null,
+        };
+        
+        const response_data = try zeke.handleCodeAnalysis(allocator, zeke_request);
+        defer allocator.free(response_data);
+        
+        const response = try http_parser.createJsonResponse(allocator, 200, response_data);
+        defer allocator.free(response);
+        _ = try writer.writeAll(response);
+        
+    } else if (std.mem.eql(u8, path, "/v1/zeke/code/explain")) {
+        if (request.method != .POST) {
+            try sendErrorResponse(writer, allocator, 405, "Method Not Allowed");
+            return;
+        }
+        
+        if (request.body.len == 0) {
+            try sendErrorResponse(writer, allocator, 400, "Request body required");
+            return;
+        }
+        
+        const parsed = std.json.parseFromSlice(std.json.Value, allocator, request.body, .{}) catch |err| {
+            logger.err("Failed to parse JSON request: {}", .{err});
+            try sendErrorResponse(writer, allocator, 400, "Invalid JSON");
+            return;
+        };
+        defer parsed.deinit();
+        
+        const root = parsed.value;
+        const zeke_request = zeke.ZekeRequest{
+            .code = if (root.object.get("code")) |c| c.string else null,
+            .context = if (root.object.get("context")) |c| c.string else null,
+            .language = if (root.object.get("language")) |l| l.string else null,
+            .task = if (root.object.get("task")) |t| t.string else "explain",
+            .model = if (root.object.get("model")) |m| m.string else null,
+        };
+        
+        const response_data = try zeke.handleCodeExplanation(allocator, zeke_request);
+        defer allocator.free(response_data);
+        
+        const response = try http_parser.createJsonResponse(allocator, 200, response_data);
+        defer allocator.free(response);
+        _ = try writer.writeAll(response);
+        
+    } else if (std.mem.eql(u8, path, "/v1/zeke/code/refactor")) {
+        if (request.method != .POST) {
+            try sendErrorResponse(writer, allocator, 405, "Method Not Allowed");
+            return;
+        }
+        
+        if (request.body.len == 0) {
+            try sendErrorResponse(writer, allocator, 400, "Request body required");
+            return;
+        }
+        
+        const parsed = std.json.parseFromSlice(std.json.Value, allocator, request.body, .{}) catch |err| {
+            logger.err("Failed to parse JSON request: {}", .{err});
+            try sendErrorResponse(writer, allocator, 400, "Invalid JSON");
+            return;
+        };
+        defer parsed.deinit();
+        
+        const root = parsed.value;
+        const zeke_request = zeke.ZekeRequest{
+            .code = if (root.object.get("code")) |c| c.string else null,
+            .context = if (root.object.get("context")) |c| c.string else null,
+            .language = if (root.object.get("language")) |l| l.string else null,
+            .task = if (root.object.get("task")) |t| t.string else "refactor",
+            .model = if (root.object.get("model")) |m| m.string else null,
+        };
+        
+        const response_data = try zeke.handleCodeRefactoring(allocator, zeke_request);
+        defer allocator.free(response_data);
+        
+        const response = try http_parser.createJsonResponse(allocator, 200, response_data);
+        defer allocator.free(response);
+        _ = try writer.writeAll(response);
+        
+    } else if (std.mem.eql(u8, path, "/v1/zeke/code/test")) {
+        if (request.method != .POST) {
+            try sendErrorResponse(writer, allocator, 405, "Method Not Allowed");
+            return;
+        }
+        
+        if (request.body.len == 0) {
+            try sendErrorResponse(writer, allocator, 400, "Request body required");
+            return;
+        }
+        
+        const parsed = std.json.parseFromSlice(std.json.Value, allocator, request.body, .{}) catch |err| {
+            logger.err("Failed to parse JSON request: {}", .{err});
+            try sendErrorResponse(writer, allocator, 400, "Invalid JSON");
+            return;
+        };
+        defer parsed.deinit();
+        
+        const root = parsed.value;
+        const zeke_request = zeke.ZekeRequest{
+            .code = if (root.object.get("code")) |c| c.string else null,
+            .context = if (root.object.get("context")) |c| c.string else null,
+            .language = if (root.object.get("language")) |l| l.string else null,
+            .task = if (root.object.get("task")) |t| t.string else "test",
+            .model = if (root.object.get("model")) |m| m.string else null,
+        };
+        
+        const response_data = try zeke.handleTestGeneration(allocator, zeke_request);
+        defer allocator.free(response_data);
+        
+        const response = try http_parser.createJsonResponse(allocator, 200, response_data);
+        defer allocator.free(response);
+        _ = try writer.writeAll(response);
+        
+    } else if (std.mem.eql(u8, path, "/v1/zeke/terminal/assist")) {
+        if (request.method != .POST) {
+            try sendErrorResponse(writer, allocator, 405, "Method Not Allowed");
+            return;
+        }
+        
+        if (request.body.len == 0) {
+            try sendErrorResponse(writer, allocator, 400, "Request body required");
+            return;
+        }
+        
+        const parsed = std.json.parseFromSlice(std.json.Value, allocator, request.body, .{}) catch |err| {
+            logger.err("Failed to parse JSON request: {}", .{err});
+            try sendErrorResponse(writer, allocator, 400, "Invalid JSON");
+            return;
+        };
+        defer parsed.deinit();
+        
+        const root = parsed.value;
+        const zeke_request = zeke.ZekeRequest{
+            .code = if (root.object.get("command")) |c| c.string else null,
+            .context = if (root.object.get("context")) |c| c.string else null,
+            .language = if (root.object.get("shell")) |l| l.string else null,
+            .task = if (root.object.get("task")) |t| t.string else "terminal",
+            .model = if (root.object.get("model")) |m| m.string else null,
+        };
+        
+        const response_data = try zeke.handleTerminalAssistance(allocator, zeke_request);
+        defer allocator.free(response_data);
+        
+        const response = try http_parser.createJsonResponse(allocator, 200, response_data);
+        defer allocator.free(response);
+        _ = try writer.writeAll(response);
+        
+    } else if (std.mem.eql(u8, path, "/v1/zeke/project/analyze")) {
+        if (request.method != .POST) {
+            try sendErrorResponse(writer, allocator, 405, "Method Not Allowed");
+            return;
+        }
+        
+        if (request.body.len == 0) {
+            try sendErrorResponse(writer, allocator, 400, "Request body required");
+            return;
+        }
+        
+        const parsed = std.json.parseFromSlice(std.json.Value, allocator, request.body, .{}) catch |err| {
+            logger.err("Failed to parse JSON request: {}", .{err});
+            try sendErrorResponse(writer, allocator, 400, "Invalid JSON");
+            return;
+        };
+        defer parsed.deinit();
+        
+        const root = parsed.value;
+        const zeke_request = zeke.ZekeRequest{
+            .code = if (root.object.get("project_path")) |c| c.string else null,
+            .context = if (root.object.get("context")) |c| c.string else null,
+            .language = if (root.object.get("language")) |l| l.string else null,
+            .task = if (root.object.get("task")) |t| t.string else "project_analyze",
+            .model = if (root.object.get("model")) |m| m.string else null,
+        };
+        
+        const response_data = try zeke.handleProjectAnalysis(allocator, zeke_request);
+        defer allocator.free(response_data);
+        
+        const response = try http_parser.createJsonResponse(allocator, 200, response_data);
+        defer allocator.free(response);
+        _ = try writer.writeAll(response);
+        
+    } else {
+        try sendErrorResponse(writer, allocator, 404, "Zeke endpoint not found");
+    }
 }

@@ -5,6 +5,26 @@ pub const Config = struct {
     port: u16 = 8080,
     ollama_host: []const u8 = "127.0.0.1",
     ollama_port: u16 = 11434,
+    
+    // OpenAI Configuration
+    openai_api_key: ?[]const u8 = null,
+    openai_base_url: []const u8 = "https://api.openai.com/v1",
+    
+    // Claude/Anthropic Configuration
+    claude_api_key: ?[]const u8 = null,
+    claude_base_url: []const u8 = "https://api.anthropic.com/v1",
+    
+    // Google AI Configuration
+    google_api_key: ?[]const u8 = null,
+    google_base_url: []const u8 = "https://generativelanguage.googleapis.com/v1",
+    
+    // GitHub Copilot Configuration
+    github_token: ?[]const u8 = null,
+    github_base_url: []const u8 = "https://api.github.com/copilot",
+    
+    // Legacy fields (keeping for compatibility)
+    anthropic_api_key: []const u8 = "",
+    
     log_level: LogLevel = .info,
     log_json: bool = false,
     max_connections: u32 = 100,
@@ -84,6 +104,53 @@ pub fn loadFromEnv() !void {
         global_config.auth_enabled = api_key.len > 0;
     } else |_| {}
     
+    // Load API keys for all providers
+    if (std.process.getEnvVarOwned(allocator, "OPENAI_API_KEY")) |api_key| {
+        global_config.openai_api_key = try allocator.dupe(u8, api_key);
+        allocator.free(api_key);
+    } else |_| {}
+    
+    if (std.process.getEnvVarOwned(allocator, "ANTHROPIC_API_KEY")) |api_key| {
+        global_config.claude_api_key = try allocator.dupe(u8, api_key);
+        allocator.free(api_key);
+    } else |_| {}
+    
+    if (std.process.getEnvVarOwned(allocator, "CLAUDE_API_KEY")) |api_key| {
+        global_config.claude_api_key = try allocator.dupe(u8, api_key);
+        allocator.free(api_key);
+    } else |_| {}
+    
+    if (std.process.getEnvVarOwned(allocator, "GOOGLE_API_KEY")) |api_key| {
+        global_config.google_api_key = try allocator.dupe(u8, api_key);
+        allocator.free(api_key);
+    } else |_| {}
+    
+    if (std.process.getEnvVarOwned(allocator, "GITHUB_TOKEN")) |token| {
+        global_config.github_token = try allocator.dupe(u8, token);
+        allocator.free(token);
+    } else |_| {}
+    
+    // Alternative environment variable names
+    if (std.process.getEnvVarOwned(allocator, "GHOSTLLM_OPENAI_API_KEY")) |api_key| {
+        global_config.openai_api_key = try allocator.dupe(u8, api_key);
+        allocator.free(api_key);
+    } else |_| {}
+    
+    if (std.process.getEnvVarOwned(allocator, "GHOSTLLM_CLAUDE_API_KEY")) |api_key| {
+        global_config.claude_api_key = try allocator.dupe(u8, api_key);
+        allocator.free(api_key);
+    } else |_| {}
+    
+    if (std.process.getEnvVarOwned(allocator, "GHOSTLLM_GOOGLE_API_KEY")) |api_key| {
+        global_config.google_api_key = try allocator.dupe(u8, api_key);
+        allocator.free(api_key);
+    } else |_| {}
+    
+    if (std.process.getEnvVarOwned(allocator, "GHOSTLLM_GITHUB_TOKEN")) |token| {
+        global_config.github_token = try allocator.dupe(u8, token);
+        allocator.free(token);
+    } else |_| {}
+
     // Initialize logger with config
     logger.init(global_config.log_level.toLoggerLevel(), global_config.log_json);
 }
